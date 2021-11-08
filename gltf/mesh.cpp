@@ -401,7 +401,7 @@ static bool hasDeltas(const std::vector<Attr>& data)
 	return false;
 }
 
-void filterStreams(Mesh& mesh, const MaterialInfo& mi)
+void filterStreams(Mesh& mesh, const MaterialInfo& mi, const Settings& settings)
 {
 	bool morph_normal = false;
 	bool morph_tangent = false;
@@ -429,7 +429,7 @@ void filterStreams(Mesh& mesh, const MaterialInfo& mi)
 	{
 		Stream& stream = mesh.streams[i];
 
-		if (stream.type == cgltf_attribute_type_texcoord && stream.index > keep_texture_set)
+		if (!settings.keep_texcoords && stream.type == cgltf_attribute_type_texcoord && stream.index > keep_texture_set)
 			continue;
 
 		if (stream.type == cgltf_attribute_type_tangent && !mi.needsTangents)

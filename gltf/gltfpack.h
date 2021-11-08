@@ -110,6 +110,7 @@ struct Settings
 
 	bool keep_nodes;
 	bool keep_materials;
+	bool keep_texcoords;
 	bool keep_extras;
 
 	bool mesh_merge;
@@ -278,7 +279,7 @@ bool compareMeshNodes(const Mesh& lhs, const Mesh& rhs);
 void mergeMeshInstances(Mesh& mesh);
 void mergeMeshes(std::vector<Mesh>& meshes, const Settings& settings);
 void filterEmptyMeshes(std::vector<Mesh>& meshes);
-void filterStreams(Mesh& mesh, const MaterialInfo& mi);
+void filterStreams(Mesh& mesh, const MaterialInfo& mi, const Settings& settings);
 
 void mergeMeshMaterials(cgltf_data* data, std::vector<Mesh>& meshes, const Settings& settings);
 void markNeededMaterials(cgltf_data* data, std::vector<MaterialInfo>& materials, const std::vector<Mesh>& meshes, const Settings& settings);
