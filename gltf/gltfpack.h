@@ -115,6 +115,7 @@ struct Settings
 
 	bool mesh_merge;
 	bool mesh_instancing;
+	bool mesh_per_material;
 
 	float simplify_threshold;
 	bool simplify_aggressive;

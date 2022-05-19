@@ -553,6 +553,9 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 			if (prim.skin != mesh.skin || prim.targets != mesh.targets)
 				break;
 
+			if (pi > i && settings.mesh_per_material)
+				break;
+
 			if (pi > i && (mesh.instances.size() || prim.instances.size()))
 				break;
 
@@ -1264,6 +1267,10 @@ int main(int argc, char** argv)
 		{
 			settings.mesh_instancing = true;
 		}
+		else if (strcmp(arg, "-mpm") == 0)
+		{
+			settings.mesh_per_material = true;
+		}
 		else if (strcmp(arg, "-si") == 0 && i + 1 < argc && isdigit(argv[i + 1][0]))
 		{
 			settings.simplify_threshold = clamp(float(atof(argv[++i])), 0.f, 1.f);
@@ -1469,6 +1476,7 @@ int main(int argc, char** argv)
 			fprintf(stderr, "\t-ke: keep extras data\n");
 			fprintf(stderr, "\t-mm: merge instances of the same mesh together when possible\n");
 			fprintf(stderr, "\t-mi: use EXT_mesh_gpu_instancing when serializing multiple mesh instances\n");
+			fprintf(stderr, "\t-mpm: write out a single mesh per material\n");
 			fprintf(stderr, "\nMiscellaneous:\n");
 			fprintf(stderr, "\t-cf: produce compressed gltf/glb files with fallback for loaders that don't support compression\n");
 			fprintf(stderr, "\t-noq: disable quantization; produces much larger glTF files with no extensions\n");
