@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <functional>
+
 struct BasisSettings
 {
 	int etc1s_l;
@@ -273,6 +275,83 @@ static int roundBlock(int value, bool pow2)
 	return (value + 3) & ~3;
 }
 
+static void adjustDimensions(int& width, int& height, const Settings& settings)
+{
+	width = int(width * settings.texture_scale);
+	height = int(height * settings.texture_scale);
+
+	if (settings.texture_limit && (width > settings.texture_limit || height > settings.texture_limit))
+	{
+		float limit_scale = float(settings.texture_limit) / float(width > height ? width : height);
+
+		width = int(width * limit_scale);
+		height = int(height * limit_scale);
+	}
+
+	width = roundBlock(width, settings.texture_pow2);
+	height = roundBlock(height, settings.texture_pow2);
+}
+
+#ifdef WITH_BASISU
+bool encodeBasisInternal(const char* input, const char* output, bool yflip, bool normal_map, bool linear, bool uastc, int uastc_l, float uastc_q, int etc1s_l, int etc1s_q, int zstd_l, int width, int height);
+
+bool encodeBasis(const std::string& data, const char* mime_type, std::string& result, const ImageInfo& info, const Settings& settings)
+{
+	TempFile temp_input(mimeExtension(mime_type));
+	TempFile temp_output(".ktx2");
+
+	if (!writeFile(temp_input.path.c_str(), data))
+		return false;
+
+	int quality = settings.texture_quality[info.kind];
+	bool uastc = settings.texture_uastc[info.kind];
+
+	const BasisSettings& bs = kBasisSettings[quality - 1];
+
+	int width = 0, height = 0;
+	if (!getDimensions(data, mime_type, width, height))
+		return false;
+
+	adjustDimensions(width, height, settings);
+
+	int zstd = uastc ? 9 : 0;
+
+	bool ok = encodeBasisInternal(temp_input.path.c_str(), temp_output.path.c_str(), settings.texture_flipy, info.normal_map, !info.srgb, uastc, bs.uastc_l, bs.uastc_q, bs.etc1s_l, bs.etc1s_q, zstd, width, height);
+
+	return ok && readFile(temp_output.path.c_str(), result);
+}
+
+void encodePush(const std::function<void()>& job);
+void encodeWait();
+
+void encodeImages(std::string* encoded, const cgltf_data* data, const std::vector<ImageInfo>& images, const char* input_path, const Settings& settings)
+{
+	for (size_t i = 0; i < data->images_count; ++i)
+	{
+		const cgltf_image& image = data->images[i];
+		ImageInfo info = images[i];
+
+		encoded[i].clear();
+
+		encodePush([=]() {
+			std::string img_data;
+			std::string mime_type;
+			std::string result;
+
+			if (readImage(image, input_path, img_data, mime_type) && encodeBasis(img_data, mime_type.c_str(), result, info, settings))
+			{
+				encoded[i].swap(result);
+			}
+		});
+	}
+
+	encodeWait();
+}
+#endif
+
+// All code below relies on command-line execution of basisu or toktx
+#ifndef WITH_BASISU
+
 #ifdef __wasi__
 static int execute(const char* cmd, bool ignore_stdout, bool ignore_stderr)
 {
@@ -332,19 +411,19 @@ bool checkBasis(bool verbose)
 
 bool encodeBasis(const std::string& data, const char* mime_type, std::string& result, const ImageInfo& info, const Settings& settings)
 {
-	// TODO: Support texture_scale and texture_pow2 via new -resample switch from https://github.com/BinomialLLC/basis_universal/pull/226
 	TempFile temp_input(mimeExtension(mime_type));
 	TempFile temp_output(".ktx2");
 
 	if (!writeFile(temp_input.path.c_str(), data))
 		return false;
 
-	std::string cmd = getExecutable("basisu", "BASISU_PATH");
-
 	int quality = settings.texture_quality[info.kind];
 	bool uastc = settings.texture_uastc[info.kind];
 
 	const BasisSettings& bs = kBasisSettings[quality - 1];
+
+	// TODO: Support texture_scale and texture_pow2 via new -resample switch from https://github.com/BinomialLLC/basis_universal/pull/226
+	std::string cmd = getExecutable("basisu", "BASISU_PATH");
 
 	cmd += " -mipmap";
 
@@ -382,6 +461,9 @@ bool encodeBasis(const std::string& data, const char* mime_type, std::string& re
 
 	if (uastc)
 		cmd += " -ktx2_zstandard_level 9";
+
+	if (settings.texture_jobs == 1)
+		cmd += " -no_multithreading";
 
 	cmd += " -file ";
 	cmd += temp_input.path;
@@ -432,8 +514,8 @@ bool encodeKtx(const std::string& data, const char* mime_type, std::string& resu
 	cmd += " --genmipmap";
 	cmd += " --nowarn";
 
-	int newWidth = roundBlock(int(width * settings.texture_scale), settings.texture_pow2);
-	int newHeight = roundBlock(int(height * settings.texture_scale), settings.texture_pow2);
+	int newWidth = width, newHeight = height;
+	adjustDimensions(newWidth, newHeight, settings);
 
 	if (newWidth != width || newHeight != height)
 	{
@@ -473,6 +555,14 @@ bool encodeKtx(const std::string& data, const char* mime_type, std::string& resu
 	else
 		cmd += " --linear";
 
+	if (settings.texture_jobs)
+	{
+		char cs[128];
+		sprintf(cs, " --threads %d", settings.texture_jobs);
+
+		cmd += cs;
+	}
+
 	cmd += " -- ";
 	cmd += temp_output.path;
 	cmd += " ";
@@ -484,3 +574,5 @@ bool encodeKtx(const std::string& data, const char* mime_type, std::string& resu
 
 	return rc == 0 && readFile(temp_output.path.c_str(), result);
 }
+
+#endif // !WITH_BASISU

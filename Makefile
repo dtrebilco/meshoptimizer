@@ -17,7 +17,7 @@ GLTFPACK_OBJECTS=$(GLTFPACK_SOURCES:%=$(BUILD)/%.o)
 OBJECTS=$(LIBRARY_OBJECTS) $(DEMO_OBJECTS) $(GLTFPACK_OBJECTS)
 
 LIBRARY=$(BUILD)/libmeshoptimizer.a
-EXECUTABLE=$(BUILD)/meshoptimizer
+DEMO=$(BUILD)/meshoptimizer
 
 CFLAGS=-g -Wall -Wextra -Werror -std=c89
 CXXFLAGS=-g -Wall -Wextra -Wshadow -Wno-missing-field-initializers -Werror -std=c++98
@@ -25,11 +25,22 @@ LDFLAGS=
 
 $(GLTFPACK_OBJECTS): CXXFLAGS+=-std=c++11
 
+ifdef BASISU
+    $(GLTFPACK_OBJECTS): CXXFLAGS+=-DWITH_BASISU
+    $(BUILD)/gltf/basis%.cpp.o: CXXFLAGS+=-I$(BASISU)
+    gltfpack: LDFLAGS+=-lpthread
+
+    ifeq ($(HOSTTYPE),x86_64)
+        $(BUILD)/gltf/basislib.cpp.o: CXXFLAGS+=-msse4.1
+    endif
+endif
+
 WASMCC=clang++
 WASI_SDK=
 
 WASM_FLAGS=--target=wasm32-wasi --sysroot=$(WASI_SDK)
 WASM_FLAGS+=-O3 -DNDEBUG -nostartfiles -nostdlib -Wl,--no-entry -Wl,-s
+WASM_FLAGS+=-fno-slp-vectorize -fno-vectorize -fno-unroll-loops
 WASM_FLAGS+=-Wl,-z -Wl,stack-size=24576 -Wl,--initial-memory=65536
 WASM_EXPORT_PREFIX=-Wl,--export
 
@@ -75,23 +86,26 @@ ifeq ($(config),analyze)
 	CXXFLAGS+=--analyze
 endif
 
-all: $(EXECUTABLE)
+all: $(DEMO)
 
-test: $(EXECUTABLE)
-	$(EXECUTABLE) $(files)
+test: $(DEMO)
+	$(DEMO) $(files)
 
-check: $(EXECUTABLE)
-	$(EXECUTABLE)
+check: $(DEMO)
+	$(DEMO)
 
-dev: $(EXECUTABLE)
-	$(EXECUTABLE) -d $(files)
+dev: $(DEMO)
+	$(DEMO) -d $(files)
 
 format:
 	clang-format -i $(LIBRARY_SOURCES) $(DEMO_SOURCES) $(GLTFPACK_SOURCES)
 
 js: js/meshopt_decoder.js js/meshopt_decoder.module.js js/meshopt_encoder.js js/meshopt_encoder.module.js js/meshopt_simplifier.js js/meshopt_simplifier.module.js
 
-gltfpack: $(GLTFPACK_OBJECTS) $(LIBRARY)
+gltfpack: $(BUILD)/gltfpack
+	ln -fs $^ $@
+
+$(BUILD)/gltfpack: $(GLTFPACK_OBJECTS) $(LIBRARY)
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 gltfpack.wasm: gltf/library.wasm
@@ -132,7 +146,7 @@ js/%.module.js: js/%.js
 	sed '/UMD-style export/,$$d' <$< >$@
 	sed -n "s#\s*module.exports = \(.*\);#export { \\1 };#p" <$< >>$@
 
-$(EXECUTABLE): $(DEMO_OBJECTS) $(LIBRARY)
+$(DEMO): $(DEMO_OBJECTS) $(LIBRARY)
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 vcachetuner: tools/vcachetuner.cpp $(BUILD)/tools/meshloader.cpp.o $(BUILD)/demo/miniz.cpp.o $(LIBRARY)
@@ -141,11 +155,17 @@ vcachetuner: tools/vcachetuner.cpp $(BUILD)/tools/meshloader.cpp.o $(BUILD)/demo
 codecbench: tools/codecbench.cpp $(LIBRARY)
 	$(CXX) $^ $(CXXFLAGS) $(LDFLAGS) -o $@
 
-codecbench.js codecbench.wasm: tools/codecbench.cpp ${LIBRARY_SOURCES}
-	emcc $^ -O3 -g -DNDEBUG -s TOTAL_MEMORY=268435456 -o $@
+codecbench.js: tools/codecbench.cpp ${LIBRARY_SOURCES}
+	emcc $^ -O3 -g -DNDEBUG -s TOTAL_MEMORY=268435456 -s SINGLE_FILE=1 -o $@
 
-codecbench-simd.js codecbench-simd.wasm: tools/codecbench.cpp ${LIBRARY_SOURCES}
-	emcc $^ -O3 -g -DNDEBUG -s TOTAL_MEMORY=268435456 -msimd128 -o $@
+codecbench-simd.js: tools/codecbench.cpp ${LIBRARY_SOURCES}
+	emcc $^ -O3 -g -DNDEBUG -s TOTAL_MEMORY=268435456 -s SINGLE_FILE=1 -msimd128 -o $@
+
+codecbench.wasm: tools/codecbench.cpp ${LIBRARY_SOURCES}
+	$(WASMCC) $^ -fno-exceptions --target=wasm32-wasi --sysroot=$(WASI_SDK) -lc++ -lc++abi -O3 -g -DNDEBUG -o $@
+
+codecbench-simd.wasm: tools/codecbench.cpp ${LIBRARY_SOURCES}
+	$(WASMCC) $^ -fno-exceptions --target=wasm32-wasi --sysroot=$(WASI_SDK) -lc++ -lc++abi -O3 -g -DNDEBUG -msimd128 -o $@
 
 codecfuzz: tools/codecfuzz.cpp src/vertexcodec.cpp src/indexcodec.cpp
 	$(CXX) $^ -fsanitize=fuzzer,address,undefined -O1 -g -o $@

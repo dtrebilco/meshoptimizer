@@ -179,6 +179,37 @@ static bool areMaterialComponentsEqual(const cgltf_volume& lhs, const cgltf_volu
 	return true;
 }
 
+static bool areMaterialComponentsEqual(const cgltf_emissive_strength& lhs, const cgltf_emissive_strength& rhs)
+{
+	if (lhs.emissive_strength != rhs.emissive_strength)
+		return false;
+
+	return true;
+}
+
+static bool areMaterialComponentsEqual(const cgltf_iridescence& lhs, const cgltf_iridescence& rhs)
+{
+	if (lhs.iridescence_factor != rhs.iridescence_factor)
+		return false;
+
+	if (!areTextureViewsEqual(lhs.iridescence_texture, rhs.iridescence_texture))
+		return false;
+
+	if (lhs.iridescence_ior != rhs.iridescence_ior)
+		return false;
+
+	if (lhs.iridescence_thickness_min != rhs.iridescence_thickness_min)
+		return false;
+
+	if (lhs.iridescence_thickness_max != rhs.iridescence_thickness_max)
+		return false;
+
+	if (!areTextureViewsEqual(lhs.iridescence_thickness_texture, rhs.iridescence_thickness_texture))
+		return false;
+
+	return true;
+}
+
 static bool areMaterialsEqual(cgltf_data* data, const cgltf_material& lhs, const cgltf_material& rhs, const Settings& settings)
 {
 	if (lhs.has_pbr_metallic_roughness != rhs.has_pbr_metallic_roughness)
@@ -227,6 +258,18 @@ static bool areMaterialsEqual(cgltf_data* data, const cgltf_material& lhs, const
 		return false;
 
 	if (lhs.has_volume && !areMaterialComponentsEqual(lhs.volume, rhs.volume))
+		return false;
+
+	if (lhs.has_emissive_strength != rhs.has_emissive_strength)
+		return false;
+
+	if (lhs.has_emissive_strength && !areMaterialComponentsEqual(lhs.emissive_strength, rhs.emissive_strength))
+		return false;
+
+	if (lhs.has_iridescence != rhs.has_iridescence)
+		return false;
+
+	if (lhs.has_iridescence && !areMaterialComponentsEqual(lhs.iridescence, rhs.iridescence))
 		return false;
 
 	if (!areTextureViewsEqual(lhs.normal_texture, rhs.normal_texture))
@@ -332,21 +375,25 @@ void markNeededMaterials(cgltf_data* data, std::vector<MaterialInfo>& materials,
 	}
 }
 
-static void analyzeMaterialTexture(cgltf_texture_view& view, TextureKind kind, MaterialInfo& mi, cgltf_data* data, std::vector<ImageInfo>& images)
+bool hasValidTransform(const cgltf_texture_view& view)
 {
-	// if the texture transform is just the default values, disable
-	if (view.has_transform &&
-		view.transform.offset[0] == 0.0f &&
-		view.transform.offset[1] == 0.0f &&
-		view.transform.scale[0] == 1.0f &&
-		view.transform.scale[1] == 1.0f &&
-		view.transform.rotation == 0.0f &&
-		view.transform.texcoord == view.texcoord)
+	if (view.has_transform)
 	{
-		view.has_transform = 0;
+		if (view.transform.offset[0] != 0.0f || view.transform.offset[1] != 0.0f ||
+		    view.transform.scale[0] != 1.0f || view.transform.scale[1] != 1.0f ||
+		    view.transform.rotation != 0.0f)
+			return true;
+
+		if (view.transform.has_texcoord && view.transform.texcoord != view.texcoord)
+			return true;
 	}
 
-	mi.usesTextureTransform |= bool(view.has_transform);
+	return false;
+}
+
+static void analyzeMaterialTexture(const cgltf_texture_view& view, TextureKind kind, MaterialInfo& mi, cgltf_data* data, std::vector<ImageInfo>& images)
+{
+	mi.usesTextureTransform |= hasValidTransform(view);
 
 	if (view.texture && view.texture->image)
 	{
@@ -365,7 +412,7 @@ static void analyzeMaterialTexture(cgltf_texture_view& view, TextureKind kind, M
 	}
 }
 
-static void analyzeMaterial(cgltf_material& material, MaterialInfo& mi, cgltf_data* data, std::vector<ImageInfo>& images)
+static void analyzeMaterial(const cgltf_material& material, MaterialInfo& mi, cgltf_data* data, std::vector<ImageInfo>& images)
 {
 	if (material.has_pbr_metallic_roughness)
 	{
@@ -406,6 +453,12 @@ static void analyzeMaterial(cgltf_material& material, MaterialInfo& mi, cgltf_da
 	if (material.has_volume)
 	{
 		analyzeMaterialTexture(material.volume.thickness_texture, TextureKind_Attrib, mi, data, images);
+	}
+
+	if (material.has_iridescence)
+	{
+		analyzeMaterialTexture(material.iridescence.iridescence_texture, TextureKind_Attrib, mi, data, images);
+		analyzeMaterialTexture(material.iridescence.iridescence_thickness_texture, TextureKind_Attrib, mi, data, images);
 	}
 
 	analyzeMaterialTexture(material.normal_texture, TextureKind_Normal, mi, data, images);

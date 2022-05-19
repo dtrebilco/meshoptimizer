@@ -3,6 +3,7 @@
 
 #include <algorithm>
 
+#include <locale.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -240,6 +241,15 @@ static bool printReport(const char* path, cgltf_data* data, const std::vector<Bu
 	return rc == 0;
 }
 
+static bool canTransformMesh(const Mesh& mesh)
+{
+	// volume thickness is specified in mesh coordinate space; to avoid modifying materials we prohibit transforming meshes with volume materials
+	if (mesh.material && mesh.material->has_volume && mesh.material->volume.thickness_factor > 0.f)
+		return false;
+
+	return true;
+}
+
 static void process(cgltf_data* data, const char* input_path, const char* output_path, const char* report_path, std::vector<Mesh>& meshes, std::vector<Animation>& animations, const std::string& extras, const Settings& settings, std::string& json, std::string& bin, std::string& fallback, size_t& fallback_size)
 {
 	if (settings.verbose)
@@ -309,15 +319,15 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 				cgltf_node_transform_world(mesh.nodes[j], mesh.instances[j].data);
 
 			mesh.nodes.clear();
+			mesh.scene = scene;
 		}
-		else
+		else if (canTransformMesh(mesh))
 		{
 			mergeMeshInstances(mesh);
+
+			assert(mesh.nodes.empty());
+			mesh.scene = scene;
 		}
-
-		mesh.scene = scene;
-
-		assert(mesh.nodes.empty());
 	}
 
 	// material information is required for mesh and image processing
@@ -422,6 +432,8 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 	bool ext_specular = false;
 	bool ext_sheen = false;
 	bool ext_volume = false;
+	bool ext_emissive_strength = false;
+	bool ext_iridescence = false;
 	bool ext_unlit = false;
 	bool ext_instancing = false;
 	bool ext_texture_transform = false;
@@ -441,10 +453,22 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 		append(json_samplers, "}");
 	}
 
+	std::vector<std::string> encoded_images;
+
+#ifdef WITH_BASISU
+	if (data->images_count && settings.texture_ktx2)
+	{
+		encoded_images.resize(data->images_count);
+
+		encodeImages(encoded_images.data(), data, images, input_path, settings);
+	}
+#endif
+
 	for (size_t i = 0; i < data->images_count; ++i)
 	{
 		const cgltf_image& image = data->images[i];
 
+#ifndef WITH_BASISU
 		if (settings.verbose == 1 && settings.texture_ktx2)
 		{
 			const char* uri = image.uri;
@@ -452,10 +476,23 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 
 			printf("image %d (%s) is being encoded with %s\n", int(i), embedded ? "embedded" : uri, settings.texture_toktx ? "toktx" : "basisu");
 		}
+#endif
 
 		comma(json_images);
 		append(json_images, "{");
-		writeImage(json_images, views, image, images[i], i, input_path, output_path, settings);
+		if (encoded_images.size())
+		{
+			if (encoded_images[i].empty())
+				fprintf(stderr, "Warning: unable to encode image %d (%s), skipping\n", int(i), image.uri ? image.uri : "?");
+			else
+				writeEncodedImage(json_images, views, image, encoded_images[i], images[i], output_path, settings);
+
+			encoded_images[i] = std::string(); // reclaim memory early
+		}
+		else
+		{
+			writeImage(json_images, views, image, images[i], i, input_path, output_path, settings);
+		}
 		append(json_images, "}");
 	}
 
@@ -480,7 +517,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 
 		comma(json_materials);
 		append(json_materials, "{");
-		writeMaterial(json_materials, data, material, settings.quantize ? &qt_materials[i] : NULL);
+		writeMaterial(json_materials, data, material, settings.quantize ? &qp : NULL, settings.quantize ? &qt_materials[i] : NULL);
 		if (settings.keep_extras)
 			writeExtras(json_materials, extras, material.extras);
 		append(json_materials, "}");
@@ -495,6 +532,8 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 		ext_specular = ext_specular || material.has_specular;
 		ext_sheen = ext_sheen || material.has_sheen;
 		ext_volume = ext_volume || material.has_volume;
+		ext_emissive_strength = ext_emissive_strength || material.has_emissive_strength;
+		ext_iridescence = ext_iridescence || material.has_iridescence;
 		ext_unlit = ext_unlit || material.unlit;
 		ext_texture_transform = ext_texture_transform || mi.usesTextureTransform;
 	}
@@ -529,7 +568,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 			append(json_meshes, "{\"attributes\":{");
 			writeMeshAttributes(json_meshes, views, json_accessors, accr_offset, prim, 0, qp, qt, settings);
 			append(json_meshes, "}");
-			if (prim.type != 4)
+			if (prim.type != cgltf_primitive_type_triangles)
 			{
 				append(json_meshes, ",\"mode\":");
 				append(json_meshes, size_t(prim.type));
@@ -771,6 +810,8 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 	    {"KHR_materials_specular", ext_specular, false},
 	    {"KHR_materials_sheen", ext_sheen, false},
 	    {"KHR_materials_volume", ext_volume, false},
+	    {"KHR_materials_emissive_strength", ext_emissive_strength, false},
+	    {"KHR_materials_iridescence", ext_iridescence, false},
 	    {"KHR_materials_unlit", ext_unlit, false},
 	    {"KHR_materials_variants", data->variants_count > 0, false},
 	    {"KHR_lights_punctual", data->lights_count > 0, false},
@@ -940,6 +981,7 @@ int gltfpack(const char* input, const char* output, const char* report, Settings
 		return 2;
 	}
 
+#ifndef WITH_BASISU
 	if (data->images_count && settings.texture_ktx2)
 	{
 		if (checkKtx(settings.verbose > 1))
@@ -950,6 +992,12 @@ int gltfpack(const char* input, const char* output, const char* report, Settings
 		{
 			fprintf(stderr, "Error: toktx is not present in PATH or TOKTX_PATH is not set\n");
 			fprintf(stderr, "Note: toktx must be installed manually from https://github.com/KhronosGroup/KTX-Software/releases\n");
+			return 3;
+		}
+
+		if (settings.texture_limit && !settings.texture_toktx)
+		{
+			fprintf(stderr, "Error: -tl option is only supported by toktx\n");
 			return 3;
 		}
 
@@ -965,6 +1013,7 @@ int gltfpack(const char* input, const char* output, const char* report, Settings
 			return 3;
 		}
 	}
+#endif
 
 	if (oext == ".glb")
 	{
@@ -1135,6 +1184,10 @@ unsigned int textureMask(const char* arg)
 
 int main(int argc, char** argv)
 {
+#ifndef __wasi__
+	setlocale(LC_ALL, "C"); // disable locale specific convention for number parsing/printing
+#endif
+
 	meshopt_encodeIndexVersion(1);
 
 	Settings settings = defaults();
@@ -1264,6 +1317,10 @@ int main(int argc, char** argv)
 		{
 			settings.texture_scale = clamp(float(atof(argv[++i])), 0.f, 1.f);
 		}
+		else if (strcmp(arg, "-tl") == 0 && i + 1 < argc && isdigit(argv[i + 1][0]))
+		{
+			settings.texture_limit = atoi(argv[++i]);
+		}
 		else if (strcmp(arg, "-tp") == 0)
 		{
 			settings.texture_pow2 = true;
@@ -1275,6 +1332,10 @@ int main(int argc, char** argv)
 		else if (strcmp(arg, "-te") == 0)
 		{
 			fprintf(stderr, "Warning: -te is deprecated and will be removed in the future; gltfpack now automatically embeds textures into GLB files\n");
+		}
+		else if (strcmp(arg, "-tj") == 0 && i + 1 < argc && isdigit(argv[i + 1][0]))
+		{
+			settings.texture_jobs = clamp(atoi(argv[++i]), 0, 128);
 		}
 		else if (strcmp(arg, "-noq") == 0)
 		{
@@ -1345,6 +1406,11 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
+#ifdef WITH_BASISU
+	if (settings.texture_ktx2)
+		encodeBasisInit(settings.texture_jobs);
+#endif
+
 	if (test)
 	{
 		for (size_t i = 0; i < testinputs.size(); ++i)
@@ -1370,18 +1436,20 @@ int main(int argc, char** argv)
 			fprintf(stderr, "\t-o file: output file path, .gltf/.glb\n");
 			fprintf(stderr, "\t-c: produce compressed gltf/glb files (-cc for higher compression ratio)\n");
 			fprintf(stderr, "\nTextures:\n");
-			fprintf(stderr, "\t-tc: convert all textures to KTX2 with BasisU supercompression (using basisu/toktx executable)\n");
+			fprintf(stderr, "\t-tc: convert all textures to KTX2 with BasisU supercompression\n");
 			fprintf(stderr, "\t-tu: use UASTC when encoding textures (much higher quality and much larger size)\n");
 			fprintf(stderr, "\t-tq N: set texture encoding quality (default: 8; N should be between 1 and 10\n");
 			fprintf(stderr, "\t-ts R: scale texture dimensions by the ratio R (default: 1; R should be between 0 and 1)\n");
+			fprintf(stderr, "\t-tl N: limit texture dimensions to N pixels (default: 0 = no limit)\n");
 			fprintf(stderr, "\t-tp: resize textures to nearest power of 2 to conform to WebGL1 restrictions\n");
 			fprintf(stderr, "\t-tfy: flip textures along Y axis during BasisU supercompression\n");
+			fprintf(stderr, "\t-tj N: use N threads when compressing textures\n");
 			fprintf(stderr, "\tTexture classes:\n");
 			fprintf(stderr, "\t-tu C: use UASTC when encoding textures of class C\n");
 			fprintf(stderr, "\t-tq C N: set texture encoding quality for class C\n");
 			fprintf(stderr, "\t... where C is a comma-separated list (no spaces) with valid values color,normal,attrib\n");
 			fprintf(stderr, "\nSimplification:\n");
-			fprintf(stderr, "\t-si R: simplify meshes to achieve the ratio R (default: 1; R should be between 0 and 1)\n");
+			fprintf(stderr, "\t-si R: simplify meshes targeting triangle count ratio R (default: 1; R should be between 0 and 1)\n");
 			fprintf(stderr, "\t-sa: aggressively simplify to the target ratio disregarding quality\n");
 			fprintf(stderr, "\nVertices:\n");
 			fprintf(stderr, "\t-vp N: use N-bit quantization for positions (default: 14; N should be between 1 and 16)\n");
@@ -1414,11 +1482,23 @@ int main(int argc, char** argv)
 			fprintf(stderr, "\t-i file: input file to process, .obj/.gltf/.glb\n");
 			fprintf(stderr, "\t-o file: output file path, .gltf/.glb\n");
 			fprintf(stderr, "\t-c: produce compressed gltf/glb files (-cc for higher compression ratio)\n");
-			fprintf(stderr, "\t-tc: convert all textures to KTX2 with BasisU supercompression (using basisu/toktx executable)\n");
-			fprintf(stderr, "\t-si R: simplify meshes to achieve the ratio R (default: 1; R should be between 0 and 1)\n");
+			fprintf(stderr, "\t-tc: convert all textures to KTX2 with BasisU supercompression\n");
+			fprintf(stderr, "\t-si R: simplify meshes targeting triangle count ratio R (default: 1; R should be between 0 and 1)\n");
 			fprintf(stderr, "\nRun gltfpack -h to display a full list of options\n");
 		}
 
+		return 1;
+	}
+
+	if (settings.texture_limit && !settings.texture_ktx2)
+	{
+		fprintf(stderr, "Option -tl is only supported when -tc is set as well\n");
+		return 1;
+	}
+
+	if (settings.texture_pow2 && (settings.texture_limit & (settings.texture_limit - 1)) != 0)
+	{
+		fprintf(stderr, "Option -tp requires the limit specified via -tl to be a power of 2\n");
 		return 1;
 	}
 
