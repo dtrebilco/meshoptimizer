@@ -563,6 +563,9 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 			if (pi > i && settings.mesh_per_material)
 				break;
 
+			if (pi > i && (mesh.extras != prim.extras))
+				break;
+
 			if (pi > i && (mesh.instances.size() || prim.instances.size()))
 				break;
 
