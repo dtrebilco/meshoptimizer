@@ -278,6 +278,13 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 		if (mesh.nodes.empty())
 			continue;
 
+		// Assign the extras data to the mesh data - so that merging is not done on different extra data meshes and that when the mesh node is written later it is kept
+		if (mesh.nodes[0]->extras.end_offset != mesh.nodes[0]->extras.start_offset)
+		{
+			mesh.extras.clear();
+			mesh.extras.append(extras.c_str() + mesh.nodes[0]->extras.start_offset, mesh.nodes[0]->extras.end_offset - mesh.nodes[0]->extras.start_offset);
+		}
+
 		// note: when -kn is specified, we keep mesh-node attachment so that named nodes can be transformed
 		if (settings.keep_nodes)
 			continue;
@@ -670,7 +677,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 				assert(ni.keep);
 				ni.meshes.push_back(node_offset);
 
-				writeMeshNode(json_nodes, mesh_offset, mesh.nodes[j], mesh.skin, data, settings.quantize ? &qp : NULL);
+				writeMeshNode(json_nodes, mesh_offset, mesh.nodes[j], mesh.skin, data, settings.quantize ? &qp : NULL, mesh.extras);
 
 				node_offset++;
 			}
@@ -694,7 +701,7 @@ static void process(cgltf_data* data, const char* input_path, const char* output
 			comma(json_roots[mesh.scene]);
 			append(json_roots[mesh.scene], node_offset);
 
-			writeMeshNode(json_nodes, mesh_offset, NULL, mesh.skin, data, settings.quantize ? &qp : NULL);
+			writeMeshNode(json_nodes, mesh_offset, NULL, mesh.skin, data, settings.quantize ? &qp : NULL, mesh.extras);
 
 			node_offset++;
 		}

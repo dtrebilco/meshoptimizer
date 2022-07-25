@@ -1132,7 +1132,7 @@ size_t writeInstances(std::vector<BufferView>& views, std::string& json_accessor
 	return result;
 }
 
-void writeMeshNode(std::string& json, size_t mesh_offset, cgltf_node* node, cgltf_skin* skin, cgltf_data* data, const QuantizationPosition* qp)
+void writeMeshNode(std::string& json, size_t mesh_offset, cgltf_node* node, cgltf_skin* skin, cgltf_data* data, const QuantizationPosition* qp, const std::string& extras)
 {
 	comma(json);
 	append(json, "{\"mesh\":");
@@ -1170,6 +1170,12 @@ void writeMeshNode(std::string& json, size_t mesh_offset, cgltf_node* node, cglt
 			append(json, node->weights[j]);
 		}
 		append(json, "]");
+	}
+	if (extras.length() > 0)
+	{
+		comma(json);
+		append(json, "\"extras\":");
+		appendJson(json, extras.c_str(), extras.c_str() + extras.length());
 	}
 	append(json, "}");
 }
